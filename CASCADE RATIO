@@ -1,44 +1,51 @@
 """
 ==========================================================================
 KELOMPOK 10 - PENGENDALIAN PROSES
-SISTEM 1 : "RATIO CONTROL: CONTINUOUS LIQUID MIXING PROCESS"
-Studi kasus : Shell & Tube Heat Exchanger (kontrol suhu)
-Metode yang dibandingkan     : PID, PID+Feedforward, IMC, IMC-PID
+SISTEM 1 : KONTROL SUHU SHELL & TUBE HEAT EXCHANGER
+Metode yang dibandingkan : PID, PID+Feedforward, IMC, IMC-PID
 ==========================================================================
 
-DATA
--------------
-Diagram blok (slide "METODE PID CONTROLLER"):
+DESKRIPSI SISTEM
+-----------------
+Shell & Tube Heat Exchanger memanaskan fluida proses menggunakan
+superheated steam yang dialirkan melalui tube. Suhu keluaran fluida
+proses (outlet temperature) adalah variabel terkendali (CV), dan laju
+alir steam (lewat control valve) adalah variabel termanipulasi (MV).
+
+Diagram blok kontrol:
   R(s) -> [Ks=0.16] -> (+/-) -> Kc -> [K_IP=0.75] -> Gv(s) -> Gp(s) -> Y(s)
   feedback: Y(s) -> Gs(s) -> kembali ke pembanding
 
-  Gp(s)  = Heat Exchanger (Plant)         = 50 e^{-s} / (30s + 1)
-  Gv(s)  = Control Valve                  = 0.13 / (3s + 1)
-  K_IP   = Current-to-Pressure Converter  = 0.75               (gain statis)
+MODEL PROSES
+------------
+  Gp(s)  = Heat Exchanger (Plant)            = 50 e^{-s} / (30s + 1)
+  Gv(s)  = Control Valve                     = 0.13 / (3s + 1)
+  K_IP   = Current-to-Pressure Converter     = 0.75               (gain statis)
   Gs(s)  = Temperature Sensor (Thermocouple) = 0.16 / (10s + 1)
-  Gd1(s) = Gangguan aliran proses          = 1 / (30s + 1)
-  Gd2(s) = Gangguan suhu masuk             = 3 / (30s + 1)
+  Gd1(s) = Gangguan aliran proses             = 1 / (30s + 1)
+  Gd2(s) = Gangguan suhu masuk                = 3 / (30s + 1)
 
-Model proses tereduksi (slide "METODE PID+FEEDFORWARD"), yaitu
-K_IP * Gv(s) * Gp(s) dibulatkan:
+Model proses tereduksi (K_IP * Gv(s) * Gp(s) digabung & dibulatkan),
+dipakai untuk perancangan Feedforward / IMC / IMC-PID:
   Gp_red(s) = 5 e^{-s} / (90 s^2 + 33 s + 1)          ; (90s^2+33s+1)=(3s+1)(30s+1)
   Gd(s)     = 1 / (30 s + 1)
   Gf(s)     = -(18 s^2 + 6.6 s + 0.2) / [(30s+1)(lam_ff s + 1)]   (feedforward)
 
-Persamaan karakteristik closed-loop (slide "METODE PID CONTROLLER"):
+ANALISIS KESTABILAN (Routh-Hurwitz)
+------------------------------------
+Persamaan karakteristik closed-loop:
   900 s^3 + 420 s^2 + 43 s + (0.798 Kc + 1) = 0
-  -> Routh-Hurwitz: Kcu = 23.8 ; Tu = 28.79 s   (TERVERIFIKASI ulang di bawah)
-  -> Ziegler-Nichols PID : Kp=14.28 , Ti=14.395 s , Td=3.59 s
+  -> Critical gain Kcu = 23.8 ; Ultimate period Tu = 28.79 s
+  -> Tuning Ziegler-Nichols PID : Kc=14.28 , Ti=14.395 s , Td=3.59 s
 
-IMC (slide "METODE INTERNAL MODEL CONTROL"):
+IMC & IMC-PID
+-------------
   Filter parameter : lam = 11.4  atau  lam = 17
   Q(s)  = (30s+1)(3s+1)(0.083 s^2 + 0.5 s + 1) / [5 (lam s + 1)^4]
-
-IMC-PID (slide "METODE IMC+PID"):
   Gc(s) = Q(s) / (1 - Gp_red(s) Q(s)) = (90 s^2 + 33 s + 1) / [5(2 lam^2 s^2 + 2 lam s)]
 
-Tabel hasil pada PDF (Result and Discussion) - digunakan sebagai PEMBANDING
-(validasi) terhadap hasil simulasi kode ini:
+INDEKS KINERJA ACUAN (sebagai pembanding hasil simulasi)
+-----------------------------------------------------------
   Metode                  Overshoot(%)   Settling Time(s)   IAE     ISE     ITAE    ITSE
   Feedback PID                38.38          115.2          4.755    366    1.926   6.333
   Feedback + Feedforward      30.04           91.3          4.428    310    1.868   5.539
@@ -47,6 +54,7 @@ Tabel hasil pada PDF (Result and Discussion) - digunakan sebagai PEMBANDING
 ==========================================================================
 """
 
+
 import numpy as np
 import matplotlib.pyplot as plt
 import control as ct
@@ -54,7 +62,7 @@ import control as ct
 plt.rcParams["figure.dpi"] = 110
 
 # ======================================================================
-# 1. MODEL PROSES (langsung dari PDF)
+# 1. MODEL PROSES
 # ======================================================================
 PADE_ORDER = 3                       # orde pendekatan Pade untuk delay e^{-s}
 num_d, den_d = ct.pade(1.0, PADE_ORDER)     # delay = 1 s (sesuai Gp(s))
@@ -69,13 +77,13 @@ Ks      = 0.16                               # skala set point (= gain DC sensor
 
 # --- Model tereduksi (slide "METODE PID+FEEDFORWARD" & "IMC"), dipakai utk
 #     Feedforward / IMC / IMC-PID -- TANPA dinamika sensor terpisah (mengikuti
-#     definisi Gp_red & Gd PADA SLIDE TERSEBUT, sesuai apa adanya di PDF) ---
+#     model proses tereduksi yang khusus digunakan utk Feedforward/IMC) ---
 Gp_red_nodelay = ct.tf([5], [90, 33, 1])     # 5/(90s^2+33s+1) = 5/[(3s+1)(30s+1)]
 Gp_red = Delay * Gp_red_nodelay              # 5 e^{-s} / (90s^2+33s+1)
 Gd     = ct.tf([1], [30, 1])                 # gangguan aliran proses (utk FF/IMC)
 
 print("="*70)
-print("MODEL PROSES (Sistem 1 - PDF Kelompok 10)")
+print("MODEL PROSES (Sistem 1)")
 print("="*70)
 print("Gp(s) [plant]        =", Gp_full)
 print("Gv(s) [control valve]=", Gv, " | K_IP =", K_IP, " | Gs(s) [sensor] =", Gs)
@@ -83,10 +91,10 @@ print("Gp_red(s) [FF/IMC]    =", Gp_red_nodelay, " x delay e^-s")
 print("Gd(s) [gangguan]      =", Gd)
 
 # ======================================================================
-# 2. VALIDASI ROUTH-HURWITZ (mereproduksi Kcu & Tu dari PDF)
+# 2. ANALISIS KESTABILAN -- ROUTH-HURWITZ (mencari Kcu & Tu)
 # ======================================================================
 print("\n" + "="*70)
-print("ANALISIS KESTABILAN -- ROUTH-HURWITZ (replikasi hitungan PDF)")
+print("ANALISIS KESTABILAN -- ROUTH-HURWITZ")
 print("="*70)
 print("Persamaan karakteristik : 900 s^3 + 420 s^2 + 43 s + (0.798 Kc + 1) = 0")
 
@@ -97,20 +105,20 @@ a3_crit = 0.798 * Kcu + 1.0
 omega_c = np.sqrt(a3_crit / a1)          # dari persamaan bantu a1*w^2 + a3 = 0
 Tu = 2 * np.pi / omega_c
 
-print(f"Critical gain  Kcu = {Kcu:.3f}   (PDF: 23.8)")
-print(f"Ultimate period Tu = {Tu:.3f} s  (PDF: 28.79 s)")
+print(f"Critical gain  Kcu = {Kcu:.3f}")
+print(f"Ultimate period Tu = {Tu:.3f} s")
 
 # Tuning Ziegler-Nichols (closed loop / continuous cycling)
 Kc_pid = 0.6 * Kcu
 Ti_pid = Tu / 2
 Td_pid = Tu / 8
 print(f"\nTuning Ziegler-Nichols PID :")
-print(f"  Kc = 0.6*Kcu = {Kc_pid:.3f}   (PDF: 14.28)")
-print(f"  Ti = Tu/2    = {Ti_pid:.3f}  (PDF: 14.395 s)")
-print(f"  Td = Tu/8    = {Td_pid:.3f}   (PDF: 3.59 s)")
+print(f"  Kc = 0.6*Kcu = {Kc_pid:.3f}")
+print(f"  Ti = Tu/2    = {Ti_pid:.3f} s")
+print(f"  Td = Tu/8    = {Td_pid:.3f} s")
 
 # ======================================================================
-# 3. KONTROLER -- 4 metode sesuai PDF
+# 3. KONTROLER -- 4 metode
 # ======================================================================
 def pid_tf(Kc, Ti, Td, Nd=10):
     """PID praktis dengan filter turunan orde-1 (derivative filter N) agar proper."""
@@ -121,12 +129,12 @@ def pid_tf(Kc, Ti, Td, Nd=10):
 Gc_PID = pid_tf(Kc_pid, Ti_pid, Td_pid)
 
 # --- PID + Feedforward ---
-lam_ff = 0.5     # filter parameter feedforward (PDF hanya menyebut rentang 0-1,
+lam_ff = 0.5     # filter parameter feedforward (dipilih dlm rentang realizable 0-1,
                  # nilai pasti tidak dicantumkan -> diasumsikan 0.5 utk realizability)
 s = ct.tf('s')
 Gf = -(18*s**2 + 6.6*s + 0.2) / ((30*s+1)*(lam_ff*s+1))
 
-# --- IMC & IMC-PID (lam = 11.4 dan lam = 17, sesuai PDF) ---
+# --- IMC & IMC-PID (lam = 11.4 dan lam = 17) ---
 def imc_pid_tf(lam):
     # Gc(s) = (90s^2+33s+1) / [5*(2*lam^2*s^2 + 2*lam*s)]
     return (90*s**2 + 33*s + 1) / (5*(2*lam**2*s**2 + 2*lam*s))
@@ -204,7 +212,7 @@ def perf_metrics(t, y, sp=1.0):
     return dict(rise=rise, settle=settle, overshoot=overshoot, iae=iae, ise=ise, itae=itae, itse=itse)
 
 print("\n" + "="*70)
-print("ANALISIS PERFORMANSI (respon step setpoint, dibandingkan dgn Tabel PDF)")
+print("ANALISIS PERFORMANSI (respon step setpoint, dibandingkan dgn indeks acuan)")
 print("="*70)
 results = {}
 for name, (T_cl, L) in systems.items():
@@ -214,10 +222,10 @@ for name, (T_cl, L) in systems.items():
     print(f"[{name}] Overshoot={m['overshoot']:.2f}% | Settling={m['settle']:.2f}s | "
           f"IAE={m['iae']:.3f} | ISE={m['ise']:.3f} | ITAE={m['itae']:.3f} | ITSE={m['itse']:.3f}")
 
-print("\nReferensi PDF -> Feedback PID: OS=38.38% Ts=115.2s IAE=4.755 ISE=366 ITAE=1.926 ITSE=6.333")
-print("Catatan: nilai simulasi dapat sedikit berbeda dari PDF karena (a) PDF menggunakan")
+print("\nIndeks acuan -> Feedback PID: OS=38.38% Ts=115.2s IAE=4.755 ISE=366 ITAE=1.926 ITSE=6.333")
+print("Catatan: nilai simulasi dapat sedikit berbeda dari indeks acuan karena (a) acuan tersebut")
 print("Simulink nonlinear + relay-autotuning, sedangkan kode ini memakai model linier")
-print("Pade-delay; (b) parameter feedforward/lam_ff tidak dicantumkan eksplisit di PDF.")
+print("Pade-delay; (b) parameter feedforward/lam_ff tidak dicantumkan eksplisit sebelumnya.")
 
 # ======================================================================
 # 6. PERBANDINGAN PENOLAKAN GANGGUAN : PID vs PID+Feedforward
@@ -278,5 +286,5 @@ axs[1,1].tick_params(axis='x', rotation=15, labelsize=8)
 axs[1,1].grid(alpha=.3, axis='y')
 
 plt.tight_layout()
-plt.savefig("/home/claude/project/sistem1_pdf_hasil.png", dpi=150)
-print("\nGrafik disimpan -> sistem1_pdf_hasil.png")
+plt.savefig("/home/claude/project/sistem1_hasil.png", dpi=150)
+print("\nGrafik disimpan -> sistem1_hasil.png")
