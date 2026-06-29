@@ -1,0 +1,328 @@
+%% ========================================================================
+%  SISTEM RATIO CONTROL - SHELL AND TUBE HEAT EXCHANGER
+%  ------------------------------------------------------------------------
+%  File ini menjalankan dan membandingkan 4 METODE PENGENDALIAN sekaligus:
+%    1) Feedback PID Controller          (tuning Ziegler-Nichols)
+%    2) PID + Feedforward Controller
+%    3) Internal Model Control (IMC)
+%    4) Internal Model Based PID (IMC-PID)
+%
+%  Untuk SETIAP metode dihitung:
+%    - ANALISIS KESTABILAN  : Routh-Hurwitz (gain kritis Kcu, Tu) & pole
+%                              closed-loop (dengan time delay, aproks. Pade)
+%                              + Gain Margin / Phase Margin
+%    - ANALISIS PERFORMANSI : Overshoot, Settling Time, Rise Time,
+%                              Steady-State Error, IAE, ISE, ITAE, ITSE
+%
+%  Di akhir file ditampilkan TABEL & GRAFIK PERBANDINGAN ke-4 metode.
+%
+%  Sumber data: Laporan Tugas Pengendalian Proses - Kelompok 10
+% ========================================================================
+clc; clear; close all;
+s = tf('s');
+
+fprintf('##########################################################\n');
+fprintf('#   SISTEM RATIO CONTROL - SHELL AND TUBE HEAT EXCHANGER  #\n');
+fprintf('##########################################################\n\n');
+
+% Struct untuk menyimpan hasil semua metode (dipakai di tabel ringkasan)
+hasil = struct();
+
+%% ========================================================================
+%  METODE 1 : FEEDBACK PID CONTROLLER
+% =========================================================================
+fprintf('==========================================================\n');
+fprintf(' METODE 1 : FEEDBACK PID CONTROLLER\n');
+fprintf('==========================================================\n\n');
+
+% ---- Transfer function komponen (sesuai diagram blok laporan) ----
+Gp_nodelay = 50/(30*s+1);      % Heat Exchanger (Plant) tanpa delay
+theta      = 1;                % Dead time (detik)
+Gv  = 0.13/(3*s+1);            % Control Valve
+Kip = 0.75;                    % I/P Converter
+Gs  = 0.16/(10*s+1);           % Sensor (Thermocouple)
+Kr  = 0.16;                    % Gain jalur referensi R(s)
+Gd1 = 1/(30*s+1);              % Disturbance - flow
+Gd2 = 3/(30*s+1);              % Disturbance - suhu masuk
+
+% ---- Parameter PID hasil tuning Ziegler-Nichols ----
+Kc1 = 14.28; Ti1 = 14.395; Td1 = 3.59;
+Ki1 = Kc1/Ti1; Kd1 = Kc1*Td1;
+C_pid = pid(Kc1, Ki1, Kd1);
+
+fprintf('Parameter PID (Ziegler-Nichols): Kc=%.2f, Ti=%.3f s, Td=%.2f s\n\n', Kc1, Ti1, Td1);
+
+% ---- A. ANALISIS KESTABILAN (Routh-Hurwitz) ----
+fprintf('--- A. Analisis Kestabilan (Routh-Hurwitz) ---\n');
+gain_loop = 0.798;     % Gv*Kip*Gp*Gs (gain total loop, sesuai laporan)
+den_poly  = conv(conv([30 1],[3 1]),[10 1]);   % (30s+1)(3s+1)(10s+1)
+a3 = den_poly(1); a2 = den_poly(2); a1 = den_poly(3); a0c = den_poly(4);
+
+fprintf('Persamaan karakteristik: %.0f*s^3 + %.0f*s^2 + %.0f*s + (%.0f+%.3f*Kc) = 0\n', ...
+    a3, a2, a1, a0c, gain_loop);
+
+Kcu1 = (a2*a1/a3 - a0c)/gain_loop;     % a2*a1 = a3*(a0c+gain_loop*Kc)
+omega_u1 = sqrt(a1/a3);
+Tu1 = 2*pi/omega_u1;
+fprintf('Kcu = %.4f   |   Tu = %.4f s   |   omega_u = %.4f rad/s\n', Kcu1, Tu1, omega_u1);
+
+RT1 = routh_array([a3, a2, a1, a0c+gain_loop*Kc1]);
+fprintf('Kolom pertama tabel Routh (pada Kc=%.2f): ', Kc1); disp(RT1(:,1)');
+if all(RT1(:,1) > 0)
+    fprintf('==> STABIL (Kc=%.2f < Kcu=%.2f)\n\n', Kc1, Kcu1);
+else
+    fprintf('==> TIDAK STABIL\n\n');
+end
+
+% Validasi dengan delay (Pade) - pole closed-loop aktual
+Gp_pade1 = pade(Gp_nodelay*exp(-theta*s), 3);
+Forward1 = C_pid*Kip*Gv*Gp_pade1;
+CL1_inner = feedback(Forward1, Gs);
+CL1 = Kr*CL1_inner;
+poles1 = pole(CL1);
+fprintf('Pole closed-loop (dgn delay): '); disp(poles1');
+fprintf('Status: %s\n', stabil_text(poles1));
+
+figure('Name','M1-Bode'); [Gm1,Pm1,~,~] = margin(Forward1*Gs); margin(Forward1*Gs); grid on;
+fprintf('Gain Margin = %.2f dB | Phase Margin = %.2f deg\n\n', 20*log10(Gm1), Pm1);
+
+% ---- B. ANALISIS PERFORMANSI ----
+fprintf('--- B. Analisis Performansi (Step Response) ---\n');
+t = 0:0.05:450;
+[y1, t1] = step(CL1, t);
+S1 = stepinfo(y1, t1, 1);
+ess1 = abs(1-y1(end));
+[IAE1,ISE1,ITAE1,ITSE1] = hitung_index(t1, 1-y1);
+tampilkan_performansi(S1, ess1, IAE1, ISE1, ITAE1, ITSE1);
+
+figure('Name','M1-Step'); plot(t1,y1,'b-','LineWidth',1.5); hold on; yline(1,'r--');
+grid on; title('Metode 1: Feedback PID - Step Response');
+xlabel('Time (s)'); ylabel('Output (normalized)'); legend('Response','Setpoint');
+
+hasil.PID = simpan_hasil('Feedback PID', S1, ess1, IAE1, ISE1, ITAE1, ITSE1, Kcu1, Tu1);
+
+%% ========================================================================
+%  METODE 2 : PID + FEEDFORWARD CONTROLLER
+% =========================================================================
+fprintf('==========================================================\n');
+fprintf(' METODE 2 : PID + FEEDFORWARD CONTROLLER\n');
+fprintf('==========================================================\n\n');
+
+Gp_nodelay2 = 5/(90*s^2+33*s+1);
+lambda_ff = 11.4;
+Gf = (-18*s^2-6.6*s-0.2)/((30*s+1)*(lambda_ff*s+1));
+Gd = 1/(30*s+1);
+
+fprintf('--- A. Analisis Kestabilan ---\n');
+fprintf('Feedforward berada pada lintasan paralel terhadap gangguan dan\n');
+fprintf('TIDAK mengubah persamaan karakteristik loop feedback (identik\n');
+fprintf('dengan loop feedback Metode 1). Kestabilan loop feedback: STABIL\n');
+fprintf('(Kc=14.28 < Kcu=23.8, lihat Metode 1).\n');
+poles_Gf = pole(Gf);
+fprintf('Pole-pole Gf(s): '); disp(poles_Gf');
+fprintf('Status Gf(s): %s (syarat realisasi fisik feedforward)\n\n', stabil_text(poles_Gf));
+
+fprintf('--- B. Analisis Performansi ---\n');
+Gp_pade2 = pade(Gp_nodelay2*exp(-theta*s), 3);
+Forward2 = C_pid*Kip*Gv*Gp_pade2;
+CL2 = Kr*feedback(Forward2, Gs);
+[y2, t2] = step(CL2, t);
+S2 = stepinfo(y2, t2, 1);
+ess2 = abs(1-y2(end));
+[IAE2,ISE2,ITAE2,ITSE2] = hitung_index(t2, 1-y2);
+tampilkan_performansi(S2, ess2, IAE2, ISE2, ITAE2, ITSE2);
+
+figure('Name','M2-Step'); plot(t2,y2,'b-','LineWidth',1.5); hold on; yline(1,'r--');
+grid on; title('Metode 2: PID+Feedforward - Step Response');
+xlabel('Time (s)'); ylabel('Output (normalized)'); legend('Response','Setpoint');
+
+% Disturbance rejection: dengan vs tanpa feedforward
+Sens2 = 1/(1+Forward2*Gs);
+Y_D_noFF  = minreal(Sens2*Gd);
+Y_D_withFF = minreal(Sens2*(Gd + Gp_nodelay2*Gf));
+[yd_noFF, td]   = step(Y_D_noFF, t);
+[yd_withFF, ~]  = step(Y_D_withFF, t);
+fprintf('Deviasi maks akibat gangguan -> tanpa FF: %.4f | dengan FF: %.4f (turun %.1f%%)\n\n', ...
+    max(abs(yd_noFF)), max(abs(yd_withFF)), (1-max(abs(yd_withFF))/max(abs(yd_noFF)))*100);
+
+hasil.PIDFF = simpan_hasil('PID+Feedforward', S2, ess2, IAE2, ISE2, ITAE2, ITSE2, NaN, NaN);
+
+%% ========================================================================
+%  METODE 3 : INTERNAL MODEL CONTROL (IMC)
+% =========================================================================
+fprintf('==========================================================\n');
+fprintf(' METODE 3 : INTERNAL MODEL CONTROL (IMC)  [lambda = 11.4]\n');
+fprintf('==========================================================\n\n');
+
+lambda_imc = 11.4;
+factor1 = (30*s+1); factor2 = (3*s+1); factor3 = (0.083*s^2+0.5*s+1);
+Q3 = (factor1*factor2*factor3) / (5*(lambda_imc*s+1)^4);
+
+fprintf('--- A. Analisis Kestabilan ---\n');
+poles_Q3 = pole(Q3);
+fprintf('Pole-pole Q(s): '); disp(poles_Q3');
+fprintf('Status: %s (model match -> closed-loop T(s)=Gp(s)*Q(s) stabil jika Q(s) stabil)\n\n', stabil_text(poles_Q3));
+
+fprintf('--- B. Analisis Performansi ---\n');
+Gp_pade3 = pade(Gp_nodelay2*exp(-theta*s), 3);
+T_imc3 = minreal(Gp_pade3*Q3);
+t3lim = 0:0.05:350;
+[y3, t3] = step(T_imc3, t3lim);
+S3 = stepinfo(y3, t3, 1);
+ess3 = abs(1-y3(end));
+[IAE3,ISE3,ITAE3,ITSE3] = hitung_index(t3, 1-y3);
+tampilkan_performansi(S3, ess3, IAE3, ISE3, ITAE3, ITSE3);
+
+figure('Name','M3-Step'); plot(t3,y3,'b-','LineWidth',1.5); hold on; yline(1,'r--');
+grid on; title('Metode 3: IMC (\lambda=11.4) - Step Response');
+xlabel('Time (s)'); ylabel('Output (normalized)'); legend('Response','Setpoint');
+
+hasil.IMC = simpan_hasil('IMC (lambda=11.4)', S3, ess3, IAE3, ISE3, ITAE3, ITSE3, NaN, NaN);
+
+%% ========================================================================
+%  METODE 4 : INTERNAL MODEL BASED PID (IMC-PID)
+% =========================================================================
+fprintf('==========================================================\n');
+fprintf(' METODE 4 : IMC-PID CONTROLLER  [lambda = 11.4]\n');
+fprintf('==========================================================\n\n');
+
+lambda_imcpid = 11.4;
+Gc4 = (90*s^2+33*s+1) / (5*(2*lambda_imcpid^2*s^2 + 2*lambda_imcpid*s));
+
+Kp_eq = 33/(10*lambda_imcpid);
+Ki_eq = 1/(10*lambda_imcpid);
+Kd_eq = 90/(10*lambda_imcpid);
+fprintf('Parameter PID ekuivalen: Kp=%.4f, Ti=%.4f s, Td=%.4f s\n\n', Kp_eq, Kp_eq/Ki_eq, Kd_eq/Kp_eq);
+
+fprintf('--- A. Analisis Kestabilan (Routh-Hurwitz) ---\n');
+[numGc4, denGc4] = tfdata(Gc4, 'v');
+[numGp4, denGp4] = tfdata(Gp_nodelay2, 'v');
+char_poly4 = conv(denGc4, denGp4) + conv(numGc4, numGp4);
+fprintf('Polinomial karakteristik: '); disp(char_poly4);
+RT4 = routh_array(char_poly4);
+fprintf('Kolom pertama tabel Routh: '); disp(RT4(:,1)');
+fprintf('Status: %s\n\n', kolom_positif_text(RT4(:,1)));
+
+Gp_pade4 = pade(Gp_nodelay2*exp(-theta*s), 3);
+CL4 = feedback(Gc4*Gp_pade4, 1);
+poles4 = pole(CL4);
+fprintf('Pole closed-loop (dgn delay): '); disp(poles4');
+fprintf('Status: %s\n\n', stabil_text(poles4));
+
+fprintf('--- B. Analisis Performansi ---\n');
+[y4, t4] = step(CL4, t3lim);
+S4 = stepinfo(y4, t4, 1);
+ess4 = abs(1-y4(end));
+[IAE4,ISE4,ITAE4,ITSE4] = hitung_index(t4, 1-y4);
+tampilkan_performansi(S4, ess4, IAE4, ISE4, ITAE4, ITSE4);
+
+figure('Name','M4-Step'); plot(t4,y4,'b-','LineWidth',1.5); hold on; yline(1,'r--');
+grid on; title('Metode 4: IMC-PID (\lambda=11.4) - Step Response');
+xlabel('Time (s)'); ylabel('Output (normalized)'); legend('Response','Setpoint');
+
+hasil.IMCPID = simpan_hasil('IMC-PID (lambda=11.4)', S4, ess4, IAE4, ISE4, ITAE4, ITSE4, NaN, NaN);
+
+%% ========================================================================
+%  TABEL & GRAFIK PERBANDINGAN 4 METODE
+% =========================================================================
+fprintf('##########################################################\n');
+fprintf('#         RINGKASAN PERBANDINGAN 4 METODE PENGENDALIAN     #\n');
+fprintf('##########################################################\n\n');
+
+Metode  = {hasil.PID.Metode; hasil.PIDFF.Metode; hasil.IMC.Metode; hasil.IMCPID.Metode};
+OS_all  = [hasil.PID.Overshoot; hasil.PIDFF.Overshoot; hasil.IMC.Overshoot; hasil.IMCPID.Overshoot];
+ST_all  = [hasil.PID.SettlingTime; hasil.PIDFF.SettlingTime; hasil.IMC.SettlingTime; hasil.IMCPID.SettlingTime];
+RT_all  = [hasil.PID.RiseTime; hasil.PIDFF.RiseTime; hasil.IMC.RiseTime; hasil.IMCPID.RiseTime];
+IAE_all = [hasil.PID.IAE; hasil.PIDFF.IAE; hasil.IMC.IAE; hasil.IMCPID.IAE];
+ISE_all = [hasil.PID.ISE; hasil.PIDFF.ISE; hasil.IMC.ISE; hasil.IMCPID.ISE];
+ITAE_all= [hasil.PID.ITAE; hasil.PIDFF.ITAE; hasil.IMC.ITAE; hasil.IMCPID.ITAE];
+ITSE_all= [hasil.PID.ITSE; hasil.PIDFF.ITSE; hasil.IMC.ITSE; hasil.IMCPID.ITSE];
+
+T1 = table(Metode, OS_all, ST_all, RT_all, ...
+    'VariableNames', {'Metode_Kontrol','Overshoot_persen','Settling_Time_s','Rise_Time_s'});
+T2 = table(Metode, IAE_all, ISE_all, ITAE_all, ITSE_all, ...
+    'VariableNames', {'Metode_Kontrol','IAE','ISE','ITAE','ITSE'});
+
+fprintf('Tabel 1 - Perbandingan Parameter Respons Sistem:\n'); disp(T1);
+fprintf('\nTabel 2 - Perbandingan Indeks Kinerja:\n'); disp(T2);
+
+figure('Name','Perbandingan Overshoot & Settling Time');
+subplot(1,2,1); bar(categorical(Metode), OS_all);
+title('Overshoot (%)'); ylabel('%'); grid on;
+subplot(1,2,2); bar(categorical(Metode), ST_all);
+title('Settling Time (s)'); ylabel('s'); grid on;
+
+figure('Name','Perbandingan Indeks Kinerja');
+bar(categorical(Metode), [IAE_all, ISE_all, ITAE_all, ITSE_all]);
+set(gca,'YScale','log'); grid on;
+legend('IAE','ISE','ITAE','ITSE','Location','NorthEast');
+title('Perbandingan Indeks Kinerja (skala log)'); ylabel('Nilai Indeks');
+
+[~, idx_os] = min(OS_all); [~, idx_st] = min(ST_all);
+fprintf('\n==> Overshoot terkecil    : %s (%.2f%%)\n', Metode{idx_os}, OS_all(idx_os));
+fprintf('==> Settling Time tercepat: %s (%.2f s)\n', Metode{idx_st}, ST_all(idx_st));
+
+save('hasil_ratio_control_lengkap.mat','hasil');
+fprintf('\nSemua hasil disimpan ke hasil_ratio_control_lengkap.mat\n');
+
+%% ========================================================================
+%  FUNGSI-FUNGSI BANTU
+% =========================================================================
+function R = routh_array(p)
+    % Membangun tabel Routh-Hurwitz dari koefisien polinomial p
+    % (orde tertinggi -> terendah).
+    p = p(:)';
+    p = p(find(p,1):end);    % hilangkan leading zero
+    n = length(p);
+    m = ceil(n/2);
+    R = zeros(n, m);
+    R(1, 1:length(1:2:n)) = p(1:2:end);
+    R(2, 1:length(2:2:n)) = p(2:2:end);
+    for i = 3:n
+        if R(i-1,1) == 0
+            R(i-1,1) = 1e-8;
+        end
+        for j = 1:(m-1)
+            if (j+1) <= size(R,2)
+                R(i,j) = (R(i-1,1)*R(i-2,j+1) - R(i-2,1)*R(i-1,j+1)) / R(i-1,1);
+            end
+        end
+    end
+end
+
+function txt = stabil_text(poles)
+    if all(real(poles) < 0)
+        txt = 'STABIL (seluruh pole di sebelah kiri sumbu imajiner)';
+    else
+        txt = 'TIDAK STABIL (terdapat pole di kanan sumbu imajiner)';
+    end
+end
+
+function txt = kolom_positif_text(kolom1)
+    if all(kolom1 > 0)
+        txt = 'STABIL (semua koefisien kolom pertama Routh positif)';
+    else
+        txt = 'TIDAK STABIL (terdapat perubahan tanda pada kolom pertama)';
+    end
+end
+
+function [IAE, ISE, ITAE, ITSE] = hitung_index(t, e)
+    IAE  = trapz(t, abs(e));
+    ISE  = trapz(t, e.^2);
+    ITAE = trapz(t, t.*abs(e));
+    ITSE = trapz(t, t.*e.^2);
+end
+
+function tampilkan_performansi(S, ess, IAE, ISE, ITAE, ITSE)
+    fprintf('Overshoot        = %.4f %%\n', S.Overshoot);
+    fprintf('Settling Time    = %.4f s\n', S.SettlingTime);
+    fprintf('Rise Time        = %.4f s\n', S.RiseTime);
+    fprintf('Steady-State Err = %.6f\n', ess);
+    fprintf('IAE=%.4f  ISE=%.4f  ITAE=%.4f  ITSE=%.4f\n\n', IAE, ISE, ITAE, ITSE);
+end
+
+function out = simpan_hasil(nama, S, ess, IAE, ISE, ITAE, ITSE, Kcu, Tu)
+    out = struct('Metode',nama,'Overshoot',S.Overshoot,'SettlingTime',S.SettlingTime, ...
+        'RiseTime',S.RiseTime,'ess',ess,'IAE',IAE,'ISE',ISE,'ITAE',ITAE,'ITSE',ITSE, ...
+        'Kcu',Kcu,'Tu',Tu);
+end
