@@ -1,0 +1,257 @@
+%% ========================================================================
+%  SISTEM CASCADE CONTROL - CONTINUOUS STIRRED TANK HEATER (CSTH)
+%  ------------------------------------------------------------------------
+%  Primary Loop  : Master PID1 mengendalikan suhu tangki theta (lambat, delay)
+%  Secondary Loop: Slave PID2 mengendalikan daya heater Q (cepat, tanpa delay)
+%
+%  File ini memuat, untuk SETIAP loop (secondary & primary) dan untuk
+%  sistem cascade secara keseluruhan:
+%    - ANALISIS KESTABILAN  : Routh-Hurwitz, pole closed-loop (dgn delay,
+%                              aproksimasi Pade), Gain Margin/Phase Margin
+%    - ANALISIS PERFORMANSI : Overshoot, Settling Time, Rise Time,
+%                              Steady-State Error, IAE, ISE, ITAE, ITSE
+%
+%  Di bagian akhir disertakan PERBANDINGAN terhadap Single-Loop Control
+%  (tanpa cascade) dan analisis Disturbance Rejection.
+%
+%  Sumber data: Laporan Tugas Pengendalian Proses - Kelompok 10
+% ========================================================================
+clc; clear; close all;
+s = tf('s');
+
+fprintf('##########################################################\n');
+fprintf('#   SISTEM CASCADE CONTROL - CONTINUOUS STIRRED TANK HEATER #\n');
+fprintf('##########################################################\n\n');
+
+%% 1. TRANSFER FUNCTION PROSES (identifikasi FOPDT - metode Tangent 63%)
+Kp1 = 7.7;   tau1 = 100;  L1 = 8;      % Primary process: theta(s)/Q(s)
+Kp2 = 1;     tau2 = 10;                % Secondary process: Q(s)/v(s) [[heater dynamics]]
+
+G1_nodelay = Kp1/(tau1*s+1);            % G1(s) tanpa delay
+G1         = G1_nodelay*exp(-L1*s);     % G1(s) = 7.7*e^-8s/(100s+1)
+G2         = Kp2/(tau2*s+1);            % G2(s) = 1/(10s+1)
+
+fprintf('Primary Process   G1(s) = %.1f*e^(-%ds) / (%ds+1)\n', Kp1, L1, tau1);
+fprintf('Secondary Process G2(s) = %.1f / (%ds+1)\n\n', Kp2, tau2);
+
+G1_pade = pade(G1, 3);    % Pade approx untuk simulasi time-domain
+
+%% 2. TUNING SECONDARY CONTROLLER (SLAVE PID2) - INNER LOOP (CEPAT)
+% Syarat desain: inner loop harus >=3x lebih cepat dari outer loop.
+% Karena G2 = 1/(10s+1) tanpa delay, digunakan IMC/Direct Synthesis (PI):
+%   Kc2 = tau2 / (Kp2 * lambda2),  Ti2 = tau2
+fprintf('---- 2. Tuning Secondary Controller (Slave PID2) ----\n');
+lambda2 = 3;                      % closed-loop time constant inner loop (detik)
+Kc2 = tau2/(Kp2*lambda2);
+Ti2 = tau2;
+fprintf('Kc2 = %.4f,  Ti2 = %.4f s  (lambda2 = %.1f s)\n\n', Kc2, Ti2, lambda2);
+
+C2 = pid(Kc2, Kc2/Ti2, 0);        % PI controller (Td2=0)
+inner_OL = C2*G2;
+inner_CL = feedback(inner_OL, 1); % Closed-loop inner (Secondary) Q(s)/SP2(s)
+
+% --- A. Analisis Kestabilan (Secondary Loop) ---
+poles_inner = pole(inner_CL);
+fprintf('Pole-pole inner loop (Secondary): '); disp(poles_inner');
+if all(real(poles_inner) < 0)
+    fprintf('==> SECONDARY LOOP STABIL\n\n');
+else
+    fprintf('==> SECONDARY LOOP TIDAK STABIL\n\n');
+end
+
+% --- B. Analisis Performansi (Secondary Loop) ---
+t_in = 0:0.01:60;
+[y_in, t_in] = step(inner_CL, t_in);
+S_in = stepinfo(y_in, t_in, 1);
+fprintf('Performansi Secondary Loop:\n');
+fprintf('  Overshoot     = %.4f %%\n', S_in.Overshoot);
+fprintf('  Settling Time = %.4f s\n', S_in.SettlingTime);
+fprintf('  Rise Time     = %.4f s\n\n', S_in.RiseTime);
+
+%% 3. TUNING PRIMARY CONTROLLER (MASTER PID1) - OUTER LOOP (LAMBAT)
+% Outer loop melihat "inner closed-loop x G1" sebagai plant efektifnya.
+% Verifikasi syarat cascade: secondary harus >=3x lebih cepat dari primary.
+fprintf('---- 3. Tuning Primary Controller (Master PID1) ----\n');
+fprintf('Syarat cascade: time constant secondary << time constant primary\n');
+fprintf('  tau2 = %d s, tau1 = %d s  -> rasio %.1fx', tau2, tau1, tau1/tau2);
+if tau1/tau2 >= 3
+    fprintf('  (>= 3x, syarat TERPENUHI)\n\n');
+else
+    fprintf('  (< 3x, syarat TIDAK terpenuhi)\n\n');
+end
+
+G1_eff = G1_pade*inner_CL;          % Plant efektif yang "dilihat" outer loop
+
+% Tuning IMC-PI berdasarkan parameter FOPDT G1 asli (Kp1, tau1, L1)
+lambda1 = 20;                       % closed-loop time constant outer loop (detik)
+Kc1 = tau1/(Kp1*(lambda1+L1));
+Ti1 = tau1;
+fprintf('Tuning IMC-PI (lambda1 = %d s):\n', lambda1);
+fprintf('  Kc1 = %.4f,  Ti1 = %.4f s\n\n', Kc1, Ti1);
+
+% Sebagai pembanding, tuning klasik Ziegler-Nichols (reaction curve, lebih agresif)
+Kc1_ZN = 1.2*tau1/(Kp1*L1);
+Ti1_ZN = 2*L1;
+Td1_ZN = 0.5*L1;
+fprintf('Tuning Ziegler-Nichols (reaction curve, sbg pembanding):\n');
+fprintf('  Kc1 = %.4f,  Ti1 = %.4f s,  Td1 = %.4f s\n\n', Kc1_ZN, Ti1_ZN, Td1_ZN);
+
+C1 = pid(Kc1, Kc1/Ti1, 0);
+
+%% 4. PRIMARY LOOP - A. ANALISIS KESTABILAN (ROUTH HURWITZ)
+fprintf('---- 4. Primary Loop - A. Analisis Kestabilan (Routh-Hurwitz) ----\n');
+fprintf('Karena G1(s) mengandung time delay, Routh-Hurwitz klasik (polinomial\n');
+fprintf('murni) diterapkan pada loop primer TANPA delay & TANPA dinamika inner\n');
+fprintf('loop (estimasi awal/ideal: 1 + C1(s)*G1_nodelay(s) = 0). Hasil ini\n');
+fprintf('kemudian divalidasi ulang dengan analisis pole closed-loop PENUH yang\n');
+fprintf('sudah menyertakan delay (aproksimasi Pade) dan dinamika inner loop.\n\n');
+
+% Persamaan karakteristik (tanpa delay, inner loop ~ unity gain dianggap ideal):
+% 1 + C1(s)*G1_nodelay(s) = 0
+[numC1, denC1] = tfdata(C1, 'v');
+[numG1, denG1] = tfdata(G1_nodelay, 'v');
+char_poly_outer = conv(denC1, denG1) + conv(numC1, numG1);
+fprintf('Polinomial karakteristik (orde tinggi -> rendah):\n'); disp(char_poly_outer);
+
+RT1 = routh_array(char_poly_outer);
+fprintf('Kolom pertama tabel Routh:\n'); disp(RT1(:,1)');
+if all(RT1(:,1) > 0)
+    fprintf('==> STABIL (estimasi tanpa delay)\n\n');
+else
+    fprintf('==> TIDAK STABIL (estimasi tanpa delay)\n\n');
+end
+
+% Validasi penuh dengan delay (Pade) - pole closed-loop aktual
+OL_full = C1*G1_eff;
+CL_full = feedback(OL_full, 1);
+poles_full = pole(CL_full);
+fprintf('Pole closed-loop PENUH (dengan delay & dinamika inner loop):\n');
+disp(poles_full');
+if all(real(poles_full) < 0)
+    fprintf('==> SISTEM CASCADE STABIL (validasi lengkap)\n\n');
+else
+    fprintf('==> SISTEM CASCADE TIDAK STABIL\n\n');
+end
+
+% Gain Margin & Phase Margin
+figure('Name','Bode Plot - Cascade Primary Loop');
+[Gm, Pm, Wcg, Wcp] = margin(OL_full);
+margin(OL_full); grid on;
+fprintf('Gain Margin  = %.4f (%.2f dB) @ %.4f rad/s\n', Gm, 20*log10(Gm), Wcg);
+fprintf('Phase Margin = %.4f deg @ %.4f rad/s\n\n', Pm, Wcp);
+
+%% 5. PRIMARY LOOP - B. ANALISIS PERFORMANSI (STEP RESPONSE)
+fprintf('---- 5. Primary Loop - B. Analisis Performansi (Step Response) ----\n');
+t = 0:0.05:800;
+[y, tout] = step(CL_full, t);
+S = stepinfo(y, tout, 1);
+ess = abs(1 - y(end));
+
+fprintf('Overshoot        = %.4f %%\n', S.Overshoot);
+fprintf('Settling Time    = %.4f s\n', S.SettlingTime);
+fprintf('Rise Time        = %.4f s\n', S.RiseTime);
+fprintf('Steady-State Err = %.6f\n\n', ess);
+
+e    = 1 - y;
+IAE  = trapz(tout, abs(e));
+ISE  = trapz(tout, e.^2);
+ITAE = trapz(tout, tout.*abs(e));
+ITSE = trapz(tout, tout.*e.^2);
+fprintf('IAE=%.4f  ISE=%.4f  ITAE=%.4f  ITSE=%.4f\n\n', IAE, ISE, ITAE, ITSE);
+
+figure('Name','Step Response - Cascade Control CSTH');
+plot(tout, y, 'b-', 'LineWidth', 1.5); hold on; yline(1, 'r--');
+grid on;
+title('Unit Step Response - Cascade Control (Primary Loop)');
+xlabel('Time (s)'); ylabel('Output Temperature \theta (normalized)');
+legend('Response', 'Setpoint', 'Location', 'SouthEast');
+
+%% 6. PERBANDINGAN: CASCADE vs SINGLE-LOOP (TANPA CASCADE)
+fprintf('---- 6. Perbandingan Cascade vs Single-Loop ----\n');
+G_single = G1_nodelay*G2*exp(-L1*s);
+G_single_pade = pade(G_single, 3);
+
+% Tuning single-loop PI menggunakan parameter FOPDT G1 yang sama (asumsi
+% dinamika heater diabaikan saat tuning, mencerminkan praktik umum)
+C1_single = pid(Kc1, Kc1/Ti1, 0);
+CL_single = feedback(C1_single*G_single_pade, 1);
+
+[y_single, t_single] = step(CL_single, t);
+S_single = stepinfo(y_single, t_single, 1);
+
+fprintf('                  | Cascade Control | Single-Loop Control\n');
+fprintf('Overshoot (%%)    | %14.4f | %18.4f\n', S.Overshoot, S_single.Overshoot);
+fprintf('Settling Time (s)| %14.4f | %18.4f\n', S.SettlingTime, S_single.SettlingTime);
+fprintf('Rise Time (s)    | %14.4f | %18.4f\n\n', S.RiseTime, S_single.RiseTime);
+
+figure('Name','Perbandingan Cascade vs Single-Loop');
+plot(tout, y, 'b-', 'LineWidth', 1.5); hold on;
+plot(t_single, y_single, 'r--', 'LineWidth', 1.5);
+yline(1, 'k:');
+grid on;
+title('Perbandingan Respons: Cascade Control vs Single-Loop Control');
+xlabel('Time (s)'); ylabel('Output Temperature (normalized)');
+legend('Cascade Control', 'Single-Loop Control', 'Setpoint', 'Location', 'SouthEast');
+
+%% 7. DISTURBANCE REJECTION: GANGGUAN PADA DAYA HEATER
+fprintf('---- 7. Disturbance Rejection (gangguan pada input heater) ----\n');
+% Cascade: gangguan masuk sebelum G2, diredam oleh inner loop sebelum
+% mempengaruhi G1 (suhu tangki).
+Sens_inner   = 1/(1 + C2*G2);
+Dist_to_Q    = Sens_inner*G2;             % gangguan -> output inner loop (Q)
+Sens_outer   = 1/(1 + C1*G1_eff);
+Dist_cascade = Sens_outer*Dist_to_Q*G1_pade;
+
+% Single-loop: gangguan yang sama, tanpa inner loop yang meredam
+Sens_single  = 1/(1 + C1_single*G_single_pade);
+Dist_single  = Sens_single*G2*G1_nodelay*exp(-L1*s);
+Dist_single  = pade(Dist_single, 3);
+
+t_d = 0:0.05:800;
+[yd_casc, t_d]   = step(Dist_cascade, t_d);
+[yd_single, t_d] = step(Dist_single, t_d);
+
+fprintf('Deviasi maksimum (Cascade)     = %.4f\n', max(abs(yd_casc)));
+fprintf('Deviasi maksimum (Single-Loop) = %.4f\n', max(abs(yd_single)));
+fprintf('Cascade meredam gangguan %.1fx lebih baik dibanding single-loop\n\n', ...
+    max(abs(yd_single))/max(abs(yd_casc)));
+
+figure('Name','Disturbance Rejection - Cascade vs Single-Loop');
+plot(t_d, yd_casc, 'b-', 'LineWidth', 1.5); hold on;
+plot(t_d, yd_single, 'r--', 'LineWidth', 1.5);
+grid on;
+title('Respons terhadap Gangguan pada Daya Heater');
+xlabel('Time (s)'); ylabel('Deviasi Output Suhu');
+legend('Cascade Control', 'Single-Loop Control', 'Location', 'NorthEast');
+
+%% 8. SIMPAN HASIL
+hasil_cascade = struct( ...
+    'Kc1',Kc1,'Ti1',Ti1,'Kc2',Kc2,'Ti2',Ti2, ...
+    'Overshoot',S.Overshoot,'SettlingTime',S.SettlingTime,'RiseTime',S.RiseTime, ...
+    'ess',ess,'IAE',IAE,'ISE',ISE,'ITAE',ITAE,'ITSE',ITSE, ...
+    'GainMargin',Gm,'PhaseMargin',Pm, ...
+    'Overshoot_single',S_single.Overshoot,'SettlingTime_single',S_single.SettlingTime, ...
+    'MaxDevCascade',max(abs(yd_casc)),'MaxDevSingle',max(abs(yd_single)));
+save('hasil_SISTEM_CASCADE_CONTROL.mat','hasil_cascade');
+fprintf('Hasil disimpan ke hasil_SISTEM_CASCADE_CONTROL.mat\n');
+
+%% ===================== FUNGSI BANTU ROUTH ARRAY ========================
+function R = routh_array(p)
+    p = p(:)';
+    p = p(find(p, 1):end);   % hilangkan leading zero
+    n = length(p);
+    m = ceil(n/2);
+    R = zeros(n, m);
+    R(1, 1:length(1:2:n)) = p(1:2:end);
+    R(2, 1:length(2:2:n)) = p(2:2:end);
+    for i = 3:n
+        if R(i-1,1) == 0
+            R(i-1,1) = 1e-8;
+        end
+        for j = 1:(m-1)
+            if (j+1) <= size(R,2)
+                R(i,j) = (R(i-1,1)*R(i-2,j+1) - R(i-2,1)*R(i-1,j+1)) / R(i-1,1);
+            end
+        end
+    end
+end
